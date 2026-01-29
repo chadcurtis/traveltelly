@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { RelaySelector } from '@/components/RelaySelector';
-import { ShareButton } from '@/components/ShareButton';
+
 import { OptimizedImage } from '@/components/OptimizedImage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostr } from '@nostrify/react';
@@ -24,7 +24,6 @@ import {
   Heart,
   MessageCircle,
   MapPin,
-  Camera,
   Plus,
   Shield
 } from 'lucide-react';

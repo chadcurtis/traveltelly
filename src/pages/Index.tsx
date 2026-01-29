@@ -12,7 +12,7 @@ import { UnifiedSearchBar } from "@/components/UnifiedSearchBar";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useReviewPermissions } from "@/hooks/useReviewPermissions";
 import { useLatestReview, useLatestStory, useLatestStockMedia, useReviewCount, useStoryCount, useStockMediaCount } from "@/hooks/useLatestItems";
-import { MapPin, Star, Camera, Zap, Shield, BookOpen, Search, Navigation } from "lucide-react";
+import { MapPin, Star, Camera, Zap, Shield, BookOpen, Search } from "lucide-react";
 import { Link } from "react-router-dom";
 import { ZapAuthorButton } from "@/components/ZapAuthorButton";
 

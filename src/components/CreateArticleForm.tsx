@@ -41,7 +41,7 @@ export function CreateArticleForm() {
   const { mutate: createEvent, isPending } = useNostrPublish();
   const { toast } = useToast();
   const [gpsCoordinates, setGpsCoordinates] = useState<GPSCoordinates | null>(null);
-  const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
+  const [_uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
 
   const [formData, setFormData] = useState<ArticleFormData>({
     title: '',

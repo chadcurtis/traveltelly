@@ -13,7 +13,7 @@ import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useMarketplaceProducts } from "@/hooks/useMarketplaceProducts";
 import { ProductCard } from "@/components/ProductCard";
 import { CreateProductDialog } from "@/components/CreateProductDialog";
-import { ShoppingCart, Search, Plus, Store, Zap, CreditCard, Camera, Video, Music, Palette } from "lucide-react";
+import { ShoppingCart, Search, Plus, Store, Zap, CreditCard, Camera, Video } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const Marketplace = () => {

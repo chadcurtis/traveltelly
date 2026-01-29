@@ -5,8 +5,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Bold,
   Italic,
-  Strikethrough,
-  Code,
   Heading1,
   Heading2,
   Heading3,

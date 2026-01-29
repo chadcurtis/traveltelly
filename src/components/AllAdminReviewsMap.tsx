@@ -16,11 +16,11 @@ import { useQuery } from '@tanstack/react-query';
 import { genUserName } from '@/lib/genUserName';
 import { MapNavigationControls, type MapLocation } from '@/components/MapNavigationControls';
 import { getTileLayerConfig } from '@/lib/mapConfig';
-import { Star, MapPin, RefreshCw, Loader2, AlertCircle, Layers, Maximize2, Minimize2, Camera, BookOpen } from 'lucide-react';
+import { Star, MapPin, RefreshCw, Loader2, AlertCircle, Layers, Maximize2, Minimize2 } from 'lucide-react';
 import { nip19 } from 'nostr-tools';
 import * as geohash from 'ngeohash';
 import { upgradeMultipleReviews, applyPrecisionUpgrades, getUpgradeStats } from '@/lib/precisionMigration';
-import type { NostrEvent } from '@nostrify/nostrify';
+
 
 // The Traveltelly admin npub for stories
 const ADMIN_NPUB = 'npub105em547c5m5gdxslr4fp2f29jav54sxml6cpk6gda7xyvxuzmv6s84a642';
@@ -140,9 +140,6 @@ const createCustomIcon = (rating: number, precision?: number, upgraded?: boolean
       });
     }
   }
-  
-  // Use blue color for review/story marker base (matching other map components)
-  const mainColor = '#27b0ff';
   
   // Different colors for rating text based on type
   const ratingColor = type === 'story' ? '#8b5cf6' 

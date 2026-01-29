@@ -150,7 +150,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onS
     // Store cleanup function
     let isActive = true;
     let loginAttempted = false; // Prevent multiple login attempts
-    const subscriptions: any[] = [];
+    const subscriptions: { close: () => void }[] = [];
     let timeoutId: NodeJS.Timeout | null = null;
 
     const cleanup = () => {
@@ -158,7 +158,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onS
       subscriptions.forEach(sub => {
         try {
           sub.close();
-        } catch (e) {
+        } catch {
           // Ignore cleanup errors
         }
       });
