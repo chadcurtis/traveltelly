@@ -1,23 +1,28 @@
 // NOTE: This file is stable and usually should not be modified.
 // It is important that all functionality in this file is preserved, and should only be modified if explicitly requested.
 
-import React, { useRef, useState, useEffect } from 'react';
-import { Shield, Upload, QrCode, Smartphone, AlertCircle } from 'lucide-react';
-import { Button } from '@/components/ui/button.tsx';
-import { Input } from '@/components/ui/input.tsx';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Shield, Upload, AlertTriangle, Loader2, Copy, Check, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
+import { QRCodeCanvas } from '@/components/ui/qrcode';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog.tsx';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.tsx';
+} from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useLoginActions } from '@/hooks/useLoginActions';
+import {
+  useLoginActions,
+  generateNostrConnectParams,
+  generateNostrConnectURI,
+  type NostrConnectParams,
+} from '@/hooks/useLoginActions';
+import { validateNsec, validateBunkerUri } from '@/lib/security';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { QRCodeSVG } from 'qrcode.react';
-import { generateSecretKey, getPublicKey } from 'nostr-tools';
 
 interface LoginDialogProps {
   isOpen: boolean;
@@ -28,100 +33,185 @@ interface LoginDialogProps {
 
 const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onSignup }) => {
   const [isLoading, setIsLoading] = useState(false);
-  const [isWaitingForConnection, setIsWaitingForConnection] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [isFileLoading, setIsFileLoading] = useState(false);
   const [nsec, setNsec] = useState('');
   const [bunkerUri, setBunkerUri] = useState('');
-  const [nostrConnectUri, setNostrConnectUri] = useState('');
+  const [nostrConnectParams, setNostrConnectParams] = useState<NostrConnectParams | null>(null);
+  const [nostrConnectUri, setNostrConnectUri] = useState<string>('');
+  const [isWaitingForConnect, setIsWaitingForConnect] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [showBunkerInput, setShowBunkerInput] = useState(false);
+  const [errors, setErrors] = useState<{
+    nsec?: string;
+    bunker?: string;
+    file?: string;
+    extension?: string;
+  }>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const nip46CleanupRef = useRef<(() => void) | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const login = useLoginActions();
+
+  // Check if on mobile device
   const isMobile = useIsMobile();
+  // Check if extension is available
+  const hasExtension = 'nostr' in window;
 
-  // Generate nostrconnect:// URI for client-initiated connections
+  // Generate nostrconnect params (sync) - just creates the QR code data
+  const generateConnectSession = useCallback(() => {
+    const relayUrls = login.getRelayUrls();
+    const params = generateNostrConnectParams(relayUrls);
+    const uri = generateNostrConnectURI(params, 'TravelTelly');
+    setNostrConnectParams(params);
+    setNostrConnectUri(uri);
+    setConnectError(null);
+  }, [login]);
+
+  // Start listening for connection (async) - runs after params are set
   useEffect(() => {
-    if (isOpen) {
-      // Clear any previous errors
-      setConnectionError(null);
-      
-      // Generate a client keypair for this connection
-      const clientSk = generateSecretKey();
-      const clientPubkey = getPublicKey(clientSk);
-      const secret = Math.random().toString(36).substring(2, 15);
-      
-      // Use current app URL as relay
-      const appUrl = window.location.origin;
-      const relay = encodeURIComponent('wss://relay.damus.io');
-      const relay2 = encodeURIComponent('wss://relay.primal.net');
-      
-      // Generate nostrconnect URI for QR code and deep links
-      const uri = `nostrconnect://${clientPubkey}?relay=${relay}&relay=${relay2}&secret=${secret}&name=${encodeURIComponent('TravelTelly')}&url=${encodeURIComponent(appUrl)}`;
-      setNostrConnectUri(uri);
-      
-      console.log('🔑 Generated nostrconnect URI:', uri);
-      console.log('   Client pubkey:', clientPubkey);
-      console.log('   Secret:', secret);
-      
-      // Store the keypair and secret in sessionStorage for the connection flow
-      sessionStorage.setItem('nip46_client_sk', JSON.stringify(Array.from(clientSk)));
-      sessionStorage.setItem('nip46_secret', secret);
-      sessionStorage.setItem('nip46_client_pubkey', clientPubkey);
+    if (!nostrConnectParams || isWaitingForConnect) return;
 
-      // Start listening for remote signer connection
-      startNip46Listener(clientSk, clientPubkey, secret);
-    } else {
-      // Clear error when dialog closes
-      setConnectionError(null);
-      setIsWaitingForConnection(false);
-    }
+    const startListening = async () => {
+      setIsWaitingForConnect(true);
+      abortControllerRef.current = new AbortController();
 
-    return () => {
-      // Cleanup listener on unmount
-      stopNip46Listener();
+      try {
+        await login.nostrconnect(nostrConnectParams);
+        onLogin();
+        onClose();
+      } catch (error) {
+        console.error('Nostrconnect failed:', error);
+        setConnectError(error instanceof Error ? error.message : 'Connection failed');
+        setIsWaitingForConnect(false);
+      }
     };
+
+    startListening();
+  }, [nostrConnectParams, login, onLogin, onClose, isWaitingForConnect]);
+
+  // Reset all state when dialog opens/closes
+  useEffect(() => {
+    if (!isOpen) {
+      // Reset state when dialog closes
+      setIsLoading(false);
+      setIsFileLoading(false);
+      setNsec('');
+      setBunkerUri('');
+      setNostrConnectParams(null);
+      setNostrConnectUri('');
+      setIsWaitingForConnect(false);
+      setConnectError(null);
+      setShowBunkerInput(false);
+      setErrors({});
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   }, [isOpen]);
 
-  const handleExtensionLogin = () => {
+  // Retry connection with new params
+  const handleRetry = useCallback(() => {
+    setNostrConnectParams(null);
+    setNostrConnectUri('');
+    setIsWaitingForConnect(false);
+    setConnectError(null);
+    // Generate new session after state clears
+    setTimeout(() => generateConnectSession(), 0);
+  }, [generateConnectSession]);
+
+  const handleCopyUri = async () => {
+    await navigator.clipboard.writeText(nostrConnectUri);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Open the nostrconnect URI in the system - this will launch a signer app like Amber if installed
+  const handleOpenSignerApp = () => {
+    if (!nostrConnectUri) return;
+    // On mobile, this will trigger the system to find an app that handles nostrconnect:// URIs
+    window.location.href = nostrConnectUri;
+  };
+
+  const handleExtensionLogin = async () => {
     setIsLoading(true);
+    setErrors(prev => ({ ...prev, extension: undefined }));
+    
     try {
       if (!('nostr' in window)) {
         throw new Error('Nostr extension not found. Please install a NIP-07 extension.');
       }
-      login.extension();
+      await login.extension();
       onLogin();
       onClose();
     } catch (error) {
-      console.error('Extension login failed:', error);
+      setErrors(prev => ({ 
+        ...prev, 
+        extension: error instanceof Error ? error.message : 'Extension login failed'
+      }));
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleKeyLogin = () => {
-    if (!nsec.trim()) return;
+    if (!nsec.trim()) {
+      setErrors(prev => ({ ...prev, nsec: 'Please enter your nsec key' }));
+      return;
+    }
+    
+    if (!validateNsec(nsec)) {
+      setErrors(prev => ({ ...prev, nsec: 'Invalid nsec format. Must start with nsec1' }));
+      return;
+    }
+
     setIsLoading(true);
+    setErrors(prev => ({ ...prev, nsec: undefined }));
     
     try {
       login.nsec(nsec);
       onLogin();
       onClose();
+      // Clear the key from memory
+      setNsec('');
     } catch (error) {
-      console.error('Nsec login failed:', error);
+      setErrors(prev => ({ 
+        ...prev, 
+        nsec: 'Login failed. Please check your key.'
+      }));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleBunkerLogin = () => {
-    if (!bunkerUri.trim() || !bunkerUri.startsWith('bunker://')) return;
+  const handleBunkerLogin = async () => {
+    if (!bunkerUri.trim()) {
+      setErrors(prev => ({ ...prev, bunker: 'Please enter a bunker URI' }));
+      return;
+    }
+    
+    if (!validateBunkerUri(bunkerUri)) {
+      setErrors(prev => ({ ...prev, bunker: 'Invalid bunker URI format. Must start with bunker://' }));
+      return;
+    }
+
     setIsLoading(true);
+    setErrors(prev => ({ ...prev, bunker: undefined }));
     
     try {
-      login.bunker(bunkerUri);
+      await login.bunker(bunkerUri);
       onLogin();
       onClose();
+      // Clear the URI from memory
+      setBunkerUri('');
     } catch (error) {
-      console.error('Bunker login failed:', error);
+      setErrors(prev => ({ 
+        ...prev, 
+        bunker: 'Failed to connect to bunker. Please check the URI.'
+      }));
     } finally {
       setIsLoading(false);
     }
@@ -131,10 +221,27 @@ const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onS
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setIsFileLoading(true);
+    setErrors(prev => ({ ...prev, file: undefined }));
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      setNsec(content.trim());
+      if (content) {
+        const trimmedContent = content.trim();
+        if (validateNsec(trimmedContent)) {
+          setNsec(trimmedContent);
+        } else {
+          setErrors(prev => ({ ...prev, file: 'File does not contain a valid nsec key' }));
+        }
+      } else {
+        setErrors(prev => ({ ...prev, file: 'Could not read file' }));
+      }
+      setIsFileLoading(false);
+    };
+    reader.onerror = () => {
+      setErrors(prev => ({ ...prev, file: 'Failed to read file' }));
+      setIsFileLoading(false);
     };
     reader.readAsText(file);
   };
@@ -146,257 +253,218 @@ const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onS
     }
   };
 
-  const startNip46Listener = async (clientSk: Uint8Array, clientPubkey: string, secret: string) => {
-    // Store cleanup function
-    let isActive = true;
-    let loginAttempted = false; // Prevent multiple login attempts
-    const subscriptions: { close: () => void }[] = [];
-    let timeoutId: NodeJS.Timeout | null = null;
-
-    const cleanup = () => {
-      isActive = false;
-      subscriptions.forEach(sub => {
-        try {
-          sub.close();
-        } catch {
-          // Ignore cleanup errors
-        }
-      });
-      subscriptions.length = 0;
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-    };
-
-    nip46CleanupRef.current = cleanup;
-
-    // Set a timeout for the connection (2 minutes)
-    timeoutId = setTimeout(() => {
-      console.log('⏱️ NIP-46 connection timeout (no response received)');
-      setIsWaitingForConnection(false);
-      setConnectionError('No response from signer. Please try again or use manual bunker URI.');
-      cleanup();
-    }, 120000);
-
-    try {
-      setIsWaitingForConnection(true);
-      
-      // Import required functions
-      const { nip44 } = await import('nostr-tools');
-      const { NRelay1 } = await import('@nostrify/nostrify');
-      
-      // Connect to multiple relays to listen for remote signer connection
-      const relays = [
-        'wss://relay.damus.io',
-        'wss://relay.primal.net', 
-        'wss://nos.lol', // Popular relay for NIP-46
-      ];
-      
-      console.log('🔌 Starting NIP-46 listener');
-      console.log('  Client pubkey:', clientPubkey);
-      console.log('  Secret:', secret);
-      console.log('  Relays:', relays);
-      
-      const processRelay = async (relayUrl: string) => {
-        if (!isActive) return;
-
-        try {
-          const relay = new NRelay1(relayUrl);
-          
-          console.log('🔌 Listening on', relayUrl);
-          
-          // Subscribe to events from the remote signer
-          const filter = {
-            kinds: [24133], // NIP-46 response kind
-            '#p': [clientPubkey],
-            since: Math.floor(Date.now() / 1000) - 10, // Start from 10 seconds ago
-          };
-          
-          console.log('📡 Subscribing with filter:', filter);
-          const sub = relay.req([filter]);
-          subscriptions.push(sub);
-
-          // Listen for connection approval
-          for await (const msg of sub) {
-            if (!isActive) break;
-            
-            if (msg[0] === 'EVENT') {
-              const event = msg[2];
-              
-              console.log('📨 Received NIP-46 event from', event.pubkey);
-              
-              try {
-                // Decrypt the content using NIP-44 v2
-                console.log('🔐 Attempting to decrypt event...');
-                
-                // First get the conversation key
-                const conversationKey = nip44.v2.utils.getConversationKey(clientSk, event.pubkey);
-                const decrypted = nip44.v2.decrypt(event.content, conversationKey);
-                
-                console.log('🔓 Decrypted response:', decrypted);
-                
-                const response = JSON.parse(decrypted);
-                console.log('📦 Parsed response:', response);
-                console.log('   Response keys:', Object.keys(response));
-                console.log('   Expected secret:', secret);
-                console.log('   Received result:', response.result);
-                console.log('   Response method:', response.method);
-                console.log('   Is connect response?', response.result === secret || response.result === 'ack');
-                
-                // Verify this is a connect response with the correct secret
-                if (response.result === secret || response.result === 'ack') {
-                  console.log('✅ Connection approved! Remote signer pubkey:', event.pubkey);
-                  
-                  // Prevent multiple login attempts from different relay listeners
-                  if (loginAttempted) {
-                    console.log('⚠️ Login already attempted, skipping');
-                    return;
-                  }
-                  loginAttempted = true;
-                  
-                  // Build the bunker URI
-                  const bunkerUri = `bunker://${event.pubkey}?relay=${encodeURIComponent('wss://relay.damus.io')}&relay=${encodeURIComponent('wss://relay.primal.net')}&secret=${secret}`;
-                  
-                  console.log('🔗 Logging in with bunker URI:', bunkerUri);
-                  
-                  // Automatically log in
-                  setIsLoading(true);
-                  
-                  try {
-                    console.log('⏳ Attempting bunker login (this may take up to 90 seconds)...');
-                    
-                    // Increase timeout to 90 seconds for bunker login
-                    const loginPromise = login.bunker(bunkerUri);
-                    const timeoutPromise = new Promise((_, reject) => 
-                      setTimeout(() => reject(new Error('Bunker connection timeout after 90s')), 90000)
-                    );
-                    
-                    await Promise.race([loginPromise, timeoutPromise]);
-                    
-                    console.log('✅ Login successful! Closing dialog...');
-                    
-                    // Small delay to ensure state is updated
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
-                    // Success!
-                    setIsWaitingForConnection(false);
-                    setIsLoading(false);
-                    setConnectionError(null);
-                    onLogin();
-                    onClose();
-                    cleanup();
-                    return;
-                  } catch (loginError) {
-                    console.error('❌ Bunker login failed:', loginError);
-                    const errorMsg = loginError instanceof Error ? loginError.message : 'Unknown error';
-                    console.error('   Error:', errorMsg);
-                    
-                    // Show user-friendly error
-                    if (errorMsg.includes('timeout')) {
-                      setConnectionError('Bunker connection timed out. The remote signer may not be responding. Try manual bunker URI below.');
-                    } else if (errorMsg.includes('WebSocket')) {
-                      setConnectionError('Relay connection issue. Try using a manual bunker URI below.');
-                    } else {
-                      setConnectionError(`Connection failed: ${errorMsg}. Try manual bunker URI below.`);
-                    }
-                    
-                    setIsWaitingForConnection(false);
-                    setIsLoading(false);
-                    // Don't cleanup - keep UI available for manual bunker URI entry
-                  }
-                } else {
-                  console.log('⚠️ Response result did not match secret. Expected:', secret, 'Got:', response.result);
-                }
-              } catch (error) {
-                console.error('❌ Failed to process NIP-46 event:', error);
-                if (error instanceof Error) {
-                  console.error('   Error message:', error.message);
-                  console.error('   Error stack:', error.stack);
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error('Relay error:', relayUrl, error);
-        }
-      };
-
-      // Listen on all relays simultaneously
-      await Promise.all(relays.map(processRelay));
-      
-    } catch (error) {
-      console.error('NIP-46 listener error:', error);
-      setIsWaitingForConnection(false);
-    }
-  };
-
-  const stopNip46Listener = () => {
-    if (nip46CleanupRef.current) {
-      nip46CleanupRef.current();
-      nip46CleanupRef.current = null;
-    }
-  };
-
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className='sm:max-w-md p-0 overflow-hidden rounded-2xl'>
-        <DialogHeader className='px-6 pt-6 pb-0 relative'>
-          <DialogTitle className='text-xl font-semibold text-center'>Log in</DialogTitle>
-          <DialogDescription className='text-center text-muted-foreground mt-2'>
+        <DialogHeader className='px-6 pt-6 pb-1 relative'>
+          <DialogTitle className='font-semibold text-center'>Log in</DialogTitle>
+          <DialogDescription className='text-center'>
             Access your account securely with your preferred method
           </DialogDescription>
         </DialogHeader>
-
-        <div className='px-6 py-8 space-y-6'>
-          {connectionError && (
-            <Alert variant="destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{connectionError}</AlertDescription>
-            </Alert>
-          )}
-          
-          <Tabs defaultValue={'nostr' in window ? 'extension' : 'key'} className='w-full'>
-            <TabsList className='grid grid-cols-3 mb-6'>
+        
+        <div className='px-6 pt-2 pb-4 space-y-4 overflow-y-auto flex-1 max-h-[70vh]'>
+          {/* Login Methods */}
+          <Tabs 
+            defaultValue={hasExtension ? 'extension' : 'key'}
+            onValueChange={(value) => {
+              if (value === 'connect' && !nostrConnectParams && !connectError) {
+                generateConnectSession();
+              }
+            }}
+            className="w-full"
+          >
+            <TabsList className='grid w-full grid-cols-3 mb-4'>
               <TabsTrigger value='extension'>Extension</TabsTrigger>
               <TabsTrigger value='key'>Nsec</TabsTrigger>
-              <TabsTrigger value='bunker'>Bunker</TabsTrigger>
+              <TabsTrigger value='connect'>Connect</TabsTrigger>
             </TabsList>
 
-            <TabsContent value='extension' className='space-y-4'>
+            <TabsContent value='extension' className='space-y-3'>
+              {errors.extension && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{errors.extension}</AlertDescription>
+                </Alert>
+              )}
               <div className='text-center p-4 rounded-lg bg-gray-50 dark:bg-gray-800'>
                 <Shield className='w-12 h-12 mx-auto mb-3 text-primary' />
                 <p className='text-sm text-gray-600 dark:text-gray-300 mb-4'>
                   Login with one click using the browser extension
                 </p>
-                <Button
-                  className='w-full rounded-full py-6'
-                  onClick={handleExtensionLogin}
-                  disabled={isLoading}
+                <div className="flex justify-center">
+                  <Button
+                    className='w-full rounded-full py-4'
+                    onClick={handleExtensionLogin}
+                    disabled={isLoading}
+                  >
+                    {isLoading ? 'Logging in...' : 'Login with Extension'}
+                  </Button>
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value='connect' className='space-y-4'>
+              {/* Nostrconnect Section */}
+              <div className='flex flex-col items-center space-y-4'>
+                {connectError ? (
+                  <div className='flex flex-col items-center space-y-4 py-4'>
+                    <p className='text-sm text-red-500 text-center'>{connectError}</p>
+                    <Button variant='outline' onClick={handleRetry}>
+                      Try Again
+                    </Button>
+                  </div>
+                ) : nostrConnectUri ? (
+                  <>
+                    {/* QR Code - only show on desktop */}
+                    {!isMobile && (
+                      <div className='p-4 bg-white dark:bg-white rounded-xl'>
+                        <QRCodeCanvas
+                          value={nostrConnectUri}
+                          size={180}
+                          level='M'
+                        />
+                      </div>
+                    )}
+
+                    {/* Status message */}
+                    <div className='flex items-center gap-2 text-sm text-muted-foreground'>
+                      {isWaitingForConnect ? (
+                        <>
+                          <Loader2 className='w-4 h-4 animate-spin' />
+                          <span>Waiting for connection...</span>
+                        </>
+                      ) : (
+                        <span>{isMobile ? 'Tap to open your signer app' : 'Scan with your signer app'}</span>
+                      )}
+                    </div>
+
+                    {/* Open Signer App button - primary action on mobile */}
+                    {isMobile && (
+                      <Button
+                        className='w-full gap-2 py-6 rounded-full'
+                        onClick={handleOpenSignerApp}
+                      >
+                        <ExternalLink className='w-5 h-5' />
+                        Open Signer App
+                      </Button>
+                    )}
+
+                    {/* Copy button */}
+                    <Button
+                      variant='outline'
+                      size={isMobile ? 'default' : 'sm'}
+                      className={isMobile ? 'w-full gap-2 rounded-full' : 'gap-2'}
+                      onClick={handleCopyUri}
+                    >
+                      {copied ? (
+                        <>
+                          <Check className='w-4 h-4' />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className='w-4 h-4' />
+                          Copy Connection URI
+                        </>
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <div className='flex items-center justify-center h-[100px]'>
+                    <Loader2 className='w-8 h-8 animate-spin text-muted-foreground' />
+                  </div>
+                )}
+              </div>
+
+              {/* Manual URI input section - collapsible */}
+              <div className='pt-4 border-t border-gray-200 dark:border-gray-700'>
+                <button
+                  type='button'
+                  onClick={() => setShowBunkerInput(!showBunkerInput)}
+                  className='flex items-center justify-center gap-2 w-full text-sm text-muted-foreground hover:text-foreground transition-colors py-2'
                 >
-                  {isLoading ? 'Logging in...' : 'Login with Extension'}
-                </Button>
+                  <span>Manual bunker connection</span>
+                  {showBunkerInput ? (
+                    <ChevronUp className='w-4 h-4' />
+                  ) : (
+                    <ChevronDown className='w-4 h-4' />
+                  )}
+                </button>
+
+                {showBunkerInput && (
+                  <div className='space-y-3 mt-3'>
+                    <div className='space-y-2'>
+                      <Input
+                        id='connectBunkerUri'
+                        value={bunkerUri}
+                        onChange={(e) => setBunkerUri(e.target.value)}
+                        className='rounded-lg border-gray-300 dark:border-gray-700 focus-visible:ring-primary text-sm'
+                        placeholder='bunker://'
+                      />
+                      {bunkerUri && !validateBunkerUri(bunkerUri) && (
+                        <p className='text-red-500 text-xs'>Invalid bunker URI format. Must start with bunker://</p>
+                      )}
+                    </div>
+
+                    <Button
+                      className='w-full rounded-full py-4'
+                      variant='outline'
+                      onClick={handleBunkerLogin}
+                      disabled={isLoading || !bunkerUri.trim() || !validateBunkerUri(bunkerUri)}
+                    >
+                      {isLoading ? 'Connecting...' : 'Login with Bunker'}
+                    </Button>
+                  </div>
+                )}
               </div>
             </TabsContent>
 
             <TabsContent value='key' className='space-y-4'>
               <div className='space-y-4'>
                 <div className='space-y-2'>
-                  <label htmlFor='nsec' className='text-sm font-medium text-gray-700 dark:text-gray-400'>
-                    Enter your nsec
+                  <label htmlFor='nsec' className='text-sm font-medium'>
+                    Private Key (nsec)
                   </label>
                   <Input
-                    type='password'
                     id='nsec'
+                    type="password"
                     value={nsec}
-                    onChange={(e) => setNsec(e.target.value)}
-                    className='rounded-lg border-gray-300 dark:border-gray-700 focus-visible:ring-primary'
+                    onChange={(e) => {
+                      setNsec(e.target.value);
+                      if (errors.nsec) setErrors(prev => ({ ...prev, nsec: undefined }));
+                    }}
+                    className={`rounded-lg ${
+                      errors.nsec ? 'border-red-500 focus-visible:ring-red-500' : ''
+                    }`}
                     placeholder='nsec1...'
+                    autoComplete="off"
                   />
+                  {errors.nsec && (
+                    <p className="text-sm text-red-500">{errors.nsec}</p>
+                  )}
+                </div>
+
+                <Button
+                  className='w-full rounded-full py-3'
+                  onClick={handleKeyLogin}
+                  disabled={isLoading || !nsec.trim()}
+                >
+                  {isLoading ? 'Verifying...' : 'Login with Nsec'}
+                </Button>
+
+                <div className='relative'>
+                  <div className='absolute inset-0 flex items-center'>
+                    <div className='w-full border-t border-muted'></div>
+                  </div>
+                  <div className='relative flex justify-center text-xs'>
+                    <span className='px-2 bg-background text-muted-foreground'>
+                      or
+                    </span>
+                  </div>
                 </div>
 
                 <div className='text-center'>
-                  <p className='text-sm mb-2 text-gray-600 dark:text-gray-400'>Or upload a key file</p>
                   <input
                     type='file'
                     accept='.txt'
@@ -406,215 +474,35 @@ const LoginDialog: React.FC<LoginDialogProps> = ({ isOpen, onClose, onLogin, onS
                   />
                   <Button
                     variant='outline'
-                    className='w-full dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700'
+                    className='w-full'
                     onClick={() => fileInputRef.current?.click()}
+                    disabled={isLoading || isFileLoading}
                   >
                     <Upload className='w-4 h-4 mr-2' />
-                    Upload Nsec File
+                    {isFileLoading ? 'Reading file...' : 'Upload Nsec File'}
                   </Button>
+                  {errors.file && (
+                    <p className="text-sm text-red-500 mt-2">{errors.file}</p>
+                  )}
                 </div>
-
-                <Button
-                  className='w-full rounded-full py-6 mt-4'
-                  onClick={handleKeyLogin}
-                  disabled={isLoading || !nsec.trim()}
-                >
-                  {isLoading ? 'Verifying...' : 'Login with Nsec'}
-                </Button>
-              </div>
-            </TabsContent>
-
-            <TabsContent value='bunker' className='space-y-4'>
-              <div className='p-4 rounded-lg bg-gray-50 dark:bg-gray-800'>
-                {isMobile ? (
-                  // Mobile: Show one-tap buttons for popular signers
-                  <div className='space-y-4'>
-                    <div className='text-center mb-4'>
-                      <Smartphone className='w-12 h-12 mx-auto mb-3 text-primary' />
-                      <h3 className='font-semibold mb-2'>One-Tap Sign In</h3>
-                      <p className='text-sm text-gray-600 dark:text-gray-300'>
-                        Connect with your mobile signer app
-                      </p>
-                    </div>
-
-                    {/* Popular mobile signer buttons */}
-                    <div className='space-y-2'>
-                      <a
-                        href={`nostrum://${nostrConnectUri.replace('nostrconnect://', '')}`}
-                        className='block'
-                      >
-                        <Button
-                          variant="outline"
-                          className='w-full rounded-full py-6'
-                        >
-                          <Shield className='w-4 h-4 mr-2' />
-                          Open in Nostrum
-                        </Button>
-                      </a>
-
-                      <a
-                        href={`amber:${nostrConnectUri}`}
-                        className='block'
-                      >
-                        <Button
-                          variant="outline"
-                          className='w-full rounded-full py-6'
-                        >
-                          <Shield className='w-4 h-4 mr-2' />
-                          Open in Amber
-                        </Button>
-                      </a>
-
-                      <a
-                        href={nostrConnectUri}
-                        className='block'
-                      >
-                        <Button
-                          variant="outline"
-                          className='w-full rounded-full py-6'
-                        >
-                          <Shield className='w-4 h-4 mr-2' />
-                          Open in Default Signer
-                        </Button>
-                      </a>
-                    </div>
-
-                    {isWaitingForConnection && (
-                      <div className='bg-green-50 dark:bg-green-900/20 p-4 rounded-lg text-center'>
-                        <div className='flex items-center justify-center gap-2 mb-2'>
-                          <div className='w-2 h-2 bg-green-500 rounded-full animate-pulse' />
-                          <p className='text-sm font-medium text-green-700 dark:text-green-400'>
-                            Waiting for connection...
-                          </p>
-                        </div>
-                        <p className='text-xs text-muted-foreground'>
-                          Approve the connection in your signer app
-                        </p>
-                      </div>
-                    )}
-
-                    <div className='relative'>
-                      <div className='absolute inset-0 flex items-center'>
-                        <span className='w-full border-t' />
-                      </div>
-                      <div className='relative flex justify-center text-xs uppercase'>
-                        <span className='bg-gray-50 dark:bg-gray-800 px-2 text-muted-foreground'>
-                          Or paste bunker URI
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className='space-y-2'>
-                      <Input
-                        id='bunkerUriMobile'
-                        value={bunkerUri}
-                        onChange={(e) => setBunkerUri(e.target.value)}
-                        className='rounded-lg border-gray-300 dark:border-gray-700 focus-visible:ring-primary'
-                        placeholder='bunker://...'
-                      />
-                      {bunkerUri && !bunkerUri.startsWith('bunker://') && (
-                        <p className='text-red-500 text-xs'>URI must start with bunker://</p>
-                      )}
-                    </div>
-
-                    <Button
-                      className='w-full rounded-full py-6'
-                      onClick={handleBunkerLogin}
-                      disabled={isLoading || !bunkerUri.trim() || !bunkerUri.startsWith('bunker://')}
-                    >
-                      {isLoading ? 'Connecting...' : 'Connect with URI'}
-                    </Button>
-                  </div>
-                ) : (
-                  // Desktop: Show QR code
-                  <div className='space-y-4'>
-                    <div className='text-center mb-4'>
-                      <QrCode className='w-12 h-12 mx-auto mb-3 text-primary' />
-                      <h3 className='font-semibold mb-2'>Scan with Mobile Signer</h3>
-                      <p className='text-sm text-gray-600 dark:text-gray-300'>
-                        Use your mobile app to scan and approve the connection
-                      </p>
-                    </div>
-
-                    {/* QR Code */}
-                    <div className='flex justify-center p-6 bg-white dark:bg-gray-900 rounded-lg'>
-                      <QRCodeSVG
-                        value={nostrConnectUri}
-                        size={220}
-                        level="M"
-                        includeMargin={true}
-                        className='rounded'
-                      />
-                    </div>
-
-                    {isWaitingForConnection ? (
-                      <div className='bg-green-50 dark:bg-green-900/20 p-4 rounded-lg text-center'>
-                        <div className='flex items-center justify-center gap-2 mb-2'>
-                          <div className='w-2 h-2 bg-green-500 rounded-full animate-pulse' />
-                          <p className='text-sm font-medium text-green-700 dark:text-green-400'>
-                            Waiting for connection...
-                          </p>
-                        </div>
-                        <p className='text-xs text-muted-foreground'>
-                          Approve the connection in your signer app
-                        </p>
-                      </div>
-                    ) : (
-                      <div className='bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg text-center'>
-                        <p className='text-xs text-muted-foreground'>
-                          📱 Scan with Nostrum, Amber, or any NIP-46 compatible signer
-                        </p>
-                      </div>
-                    )}
-
-                    <div className='relative'>
-                      <div className='absolute inset-0 flex items-center'>
-                        <span className='w-full border-t' />
-                      </div>
-                      <div className='relative flex justify-center text-xs uppercase'>
-                        <span className='bg-gray-50 dark:bg-gray-800 px-2 text-muted-foreground'>
-                          Or paste bunker URI
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className='space-y-2'>
-                      <Input
-                        id='bunkerUri'
-                        value={bunkerUri}
-                        onChange={(e) => setBunkerUri(e.target.value)}
-                        className='rounded-lg border-gray-300 dark:border-gray-700 focus-visible:ring-primary'
-                        placeholder='bunker://...'
-                      />
-                      {bunkerUri && !bunkerUri.startsWith('bunker://') && (
-                        <p className='text-red-500 text-xs'>URI must start with bunker://</p>
-                      )}
-                    </div>
-
-                    <Button
-                      className='w-full rounded-full py-6'
-                      onClick={handleBunkerLogin}
-                      disabled={isLoading || !bunkerUri.trim() || !bunkerUri.startsWith('bunker://')}
-                    >
-                      {isLoading ? 'Connecting...' : 'Connect with URI'}
-                    </Button>
-                  </div>
-                )}
               </div>
             </TabsContent>
           </Tabs>
 
-          <div className='text-center text-sm'>
-            <p className='text-gray-600 dark:text-gray-400'>
-              Don't have an account?{' '}
-              <button
-                onClick={handleSignupClick}
-                className='text-primary hover:underline font-medium'
-              >
-                Sign up
-              </button>
-            </p>
-          </div>
+          {/* Sign Up Link */}
+          {onSignup && (
+            <div className='text-center text-sm pt-4 border-t'>
+              <p className='text-gray-600 dark:text-gray-400'>
+                Don't have an account?{' '}
+                <button
+                  onClick={handleSignupClick}
+                  className='text-primary hover:underline font-medium'
+                >
+                  Sign up
+                </button>
+              </p>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
