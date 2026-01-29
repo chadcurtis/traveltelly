@@ -148,9 +148,9 @@ export function useLoginActions() {
 
       throw new Error('Timeout waiting for remote signer');
     },
-    // Get the current relay URLs for nostrconnect
-    getRelayUrls(): string[] {
-      return config.relayUrls;
+    // Get the current relay URL for nostrconnect (uses first relay)
+    getRelayUrl(): string {
+      return config.relayUrls[0];
     },
     // Log out the current user
     async logout(): Promise<void> {
