@@ -42,8 +42,9 @@ export function RemoteLoginSuccess() {
       return () => clearTimeout(timer);
     }
 
-    // Check up to 20 times (10 seconds total) for the session to become active
-    if (checkCount < 20) {
+    // Check up to 240 times (120 seconds total) for the session to become active
+    // This matches the 2-minute NIP-46 timeout in useLoginActions
+    if (checkCount < 240) {
       const timer = setTimeout(() => {
         setCheckCount(prev => prev + 1);
       }, 500);
