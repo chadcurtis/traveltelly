@@ -1,6 +1,13 @@
+import { useEffect } from 'react';
 import { CheckCircle } from 'lucide-react';
 
 export function RemoteLoginSuccess() {
+  useEffect(() => {
+    // Try to close this tab/window immediately
+    window.close();
+  }, []);
+
+  // Fallback UI if window.close() doesn't work
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
       <div className="text-center p-8">
